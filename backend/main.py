@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
-from api.routes import router
 from core.manager import TaskManager
 
 # Global task manager instance
@@ -44,7 +43,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API routes
+# API routes - import after app creation to avoid circular imports
+from api.routes import router
 app.include_router(router, prefix="/api")
 
 # Serve frontend static files if built
