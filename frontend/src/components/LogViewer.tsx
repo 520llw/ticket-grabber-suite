@@ -1,80 +1,71 @@
-import { useRef, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import type { TaskLog } from '@/services/api'
-import { format } from 'date-fns'
+import { useEffect, useRef } from 'react';
+import { clsx } from 'clsx';
+import { TaskLog } from '../services/api';
 
-interface LogViewerProps {
-  logs: TaskLog[]
-  autoScroll?: boolean
-}
-
-const levelColors: Record<TaskLog['level'], string> = {
-  info: 'text-slate-300',
+const levelColors: Record<string, string> = {
+  info: 'text-blue-400',
   warn: 'text-amber-400',
   error: 'text-red-400',
   success: 'text-emerald-400',
-}
+  debug: 'text-slate-500',
+};
 
-const levelBg: Record<TaskLog['level'], string> = {
-  info: 'bg-slate-800/30',
-  warn: 'bg-amber-500/5',
-  error: 'bg-red-500/5',
-  success: 'bg-emerald-500/5',
-}
+const levelBg: Record<string, string> = {
+  info: 'border-l-blue-500/50',
+  warn: 'border-l-amber-500/50',
+  error: 'border-l-red-500/50',
+  success: 'border-l-emerald-500/50',
+  debug: 'border-l-slate-500/50',
+};
 
-const levelBorder: Record<TaskLog['level'], string> = {
-  info: 'border-l-slate-600',
-  warn: 'border-l-amber-500',
-  error: 'border-l-red-500',
-  success: 'border-l-emerald-500',
-}
-
-export default function LogViewer({ logs, autoScroll = true }: LogViewerProps) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+export default function LogViewer({ logs, maxHeight = '400px' }: { logs: TaskLog[]; maxHeight?: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
 
   useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    if (containerRef.current && autoScrollRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [logs, autoScroll])
+  }, [logs]);
 
-  if (logs.length === 0) {
+  const handleScroll = () => {
+    if (!containerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+    autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 50;
+  };
+
+  if (!logs.length) {
     return (
-      <div className="flex items-center justify-center h-40 text-sm text-slate-500">
+      <div className="flex items-center justify-center h-32 text-sm text-muted-foreground bg-card rounded-lg border border-border">
         暂无日志
       </div>
-    )
+    );
   }
 
   return (
     <div
-      ref={scrollRef}
-      className="h-96 overflow-y-auto rounded-xl bg-slate-950 border border-slate-800 p-3 font-mono text-xs"
+      ref={containerRef}
+      onScroll={handleScroll}
+      className="bg-[hsl(222,47%,5%)] rounded-lg border border-border overflow-y-auto font-mono text-xs"
+      style={{ maxHeight }}
     >
-      <AnimatePresence initial={false}>
-        {logs.map((log, i) => {
-          const ts = log.timestamp ? new Date(log.timestamp) : new Date()
-          return (
-            <motion.div
-              key={`${log.timestamp}-${i}`}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.2 }}
-              className={`flex items-start gap-2 px-2 py-1.5 rounded border-l-2 ${levelBorder[log.level]} ${levelBg[log.level]} mb-0.5`}
-            >
-              <span className="shrink-0 text-slate-600 tabular-nums">
-                {format(ts, 'HH:mm:ss')}
-              </span>
-              <span
-                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${levelColors[log.level]} bg-slate-900/50`}
-              >
-                {log.level}
-              </span>
-              <span className={`break-all ${levelColors[log.level]}`}>{log.message}</span>
-            </motion.div>
-          )
-        })}
-      </AnimatePresence>
+      {logs.map((log, i) => (
+        <div
+          key={`${log.timestamp}-${i}`}
+          className={clsx(
+            'flex gap-3 px-3 py-1.5 border-l-2 hover:bg-white/[0.02] transition-colors',
+            levelBg[log.level] || levelBg.info
+          )}
+        >
+          <span className="text-muted-foreground shrink-0 w-20">
+            {new Date(log.timestamp).toLocaleTimeString('zh-CN')}
+          </span>
+          <span className={clsx('shrink-0 w-12 uppercase font-semibold', levelColors[log.level] || levelColors.info)}>
+            {log.level}
+          </span>
+          <span className="text-foreground/90 break-all">{log.message}</span>
+        </div>
+      ))}
     </div>
-  )
+  );
 }

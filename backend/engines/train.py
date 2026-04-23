@@ -1,62 +1,35 @@
-"""12306抢票引擎实现。
-
-流程：登录页 → 查询车次 → 选择车次和席别 → 选择乘车人 → 提交订单 → 处理验证码
+"""12306 铁路抢票引擎 v2.0 — 完整抢票流程。
 
 免责声明：本工具仅供学习研究使用，禁止用于商业用途或黄牛行为。
-用户需自行承担使用风险，不保证100%抢票成功。
-
-验证码处理说明：
-- 12306有严格的验证码机制（包括图片验证码和滑块验证）
-- 本引擎预留验证码接口，实际运行时如遇到验证码需要人工在浏览器中处理
-- 未来可集成第三方打码平台（如2Captcha、超级鹰等）
 """
 import asyncio
-import random
-from typing import Optional, Callable
+from typing import Optional, Callable, Awaitable
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from engines.base import BaseEngine
 from core.models import TaskConfig
 
 PAGE_TIMEOUT = 30000
-ACTION_TIMEOUT = 10000
 
 
 class Train12306Engine(BaseEngine):
-    """12306火车票抢票引擎。
+    """12306 铁路抢票引擎。
 
-    参考 testerSunshine/12306 的设计思路，适配新版 12306 页面结构。
-
-    task.session 格式建议："出发站-到达站" 或仅作为备注使用。
-    task.price 用于匹配席别（如 "二等座", "硬卧" 等）。
+    流程：登录 → 余票查询 → 填写出发/到达/日期 → 查询 → 选车次 → 选乘车人 → 选席别 → 提交
     """
 
     def __init__(
         self,
-        headless: bool = False,
-        log_callback: Optional[Callable[[str, str, str], None]] = None,
+        headless: bool = True,
+        log_callback: Optional[Callable[..., Awaitable[None]]] = None,
     ):
-        super().__init__(headless=headless)
-        self.log_callback = log_callback
+        super().__init__(headless=headless, log_callback=log_callback)
         self.platform_name = "12306"
 
-    async def _log(self, level: str, message: str):
-        """通过回调记录日志。"""
-        if self.log_callback:
-            await self.log_callback(level, message)
-
-    async def _random_delay(self):
-        """随机延迟防检测。"""
-        delay = random.uniform(0.5, 2.0)
-        await asyncio.sleep(delay)
+    # ── 登录 ──────────────────────────────────────────
 
     async def login(self) -> bool:
-        """打开12306登录页，等待用户完成登录。
-
-        12306支持：账号密码登录、扫码登录、指纹/人脸登录。
-        非 headless 模式下推荐扫码登录（最稳定）。
-        """
-        await self._log("info", "[12306] 打开12306登录页面...")
+        await self._log("info", "[12306] 打开登录页面...")
         try:
             await self.page.goto(
                 "https://kyfw.12306.cn/otn/resources/login.html",
@@ -65,643 +38,376 @@ class Train12306Engine(BaseEngine):
             )
             await self._random_delay()
 
-            # 检查是否已经登录（登录后通常跳转到个人中心或余票查询页）
-            logged_in_url_keywords = ["index", "query", "passport?redirect", "otn/index"]
-            current_url = self.page.url
-            if any(kw in current_url for kw in logged_in_url_keywords) and "login" not in current_url:
-                await self._log("info", "[12306] 检测到已登录状态")
-                return True
+            # 检查是否已登录
+            logged_in_sels = [
+                ".welcome-name", "#J-userName",
+                ".login-hd-account", "[class*='user-name']",
+            ]
+            for sel in logged_in_sels:
+                try:
+                    await self.page.wait_for_selector(sel, timeout=3000, state="visible")
+                    await self._log("info", "[12306] 已登录")
+                    return True
+                except PlaywrightTimeoutError:
+                    continue
 
-            # 未登录，提示用户手动扫码/登录
-            await self._log("info", "[12306] 未登录，请用户在浏览器中扫码或输入账号密码登录...")
-            await self._log("info", "[12306] 建议使用手机12306 APP扫码登录，成功率最高")
+            # 尝试点击账号登录
+            await self._log("info", "[12306] 未登录，请在浏览器中完成登录...")
+            login_sels = [
+                "a:has-text('账号登录')", ".login-hd-code a",
+                "#J-login", "a:has-text('登录')",
+            ]
+            await self.safe_click(login_sels, timeout=3000, desc="登录入口")
 
-            # 等待登录完成（最多180秒，12306扫码可能需要更久）
-            await self._log("info", "[12306] 等待登录完成（最多180秒）...")
+            # 等待用户手动登录（最多180秒）
+            await self._log("info", "[12306] 等待用户手动登录（最多180秒）...")
             for attempt in range(90):
                 await asyncio.sleep(2)
-                current_url = self.page.url
-                if "login" not in current_url and any(
-                    kw in current_url for kw in logged_in_url_keywords
-                ):
-                    await self._log("success", "[12306] 用户登录成功")
+                # 检查 URL 是否跳转到已登录页面
+                if "init" in self.page.url or "index" in self.page.url:
+                    await self._log("success", "[12306] 登录成功！")
                     return True
-                if attempt % 15 == 0:
-                    await self._log("info", "[12306] 仍在等待登录...")
+                for sel in logged_in_sels:
+                    try:
+                        await self.page.wait_for_selector(sel, timeout=2000, state="visible")
+                        await self._log("success", "[12306] 登录成功！")
+                        return True
+                    except PlaywrightTimeoutError:
+                        continue
+                if attempt % 15 == 0 and attempt > 0:
+                    await self._log("info", f"[12306] 仍在等待登录... ({attempt * 2}秒)")
 
             await self._log("warn", "[12306] 登录等待超时")
             return False
 
         except Exception as e:
-            await self._log("error", f"[12306] 登录流程异常: {e}")
+            await self._log("error", f"[12306] 登录异常: {e}")
             return False
+
+    # ── 库存检查 ──────────────────────────────────────
 
     async def check_stock(self, task: TaskConfig) -> bool:
-        """检查12306车次是否有余票。
-
-        12306余票查询页面会显示各席别的余票状态，"有" 或数字表示有余票，"--" 表示无此席别，"无" 表示售罄。
-        """
-        page_text = await self.page.content()
-        # 如果是余票查询结果页，检查目标席别
-        seat_type = task.price  # 使用 price 字段匹配席别
-        
-        if "无票" in page_text and "有" not in page_text:
-            await self._log("warn", "[12306] 查询结果中无余票")
-            return False
-        
-        # 更精确的判断需要在具体车次行中检查，交给 grab 流程处理
+        try:
+            content = await self.page.content()
+            for kw in ["无票", "候补", "暂无"]:
+                if kw in content:
+                    await self._log("warn", f"[12306] 检测到: {kw}")
+                    return False
+        except Exception:
+            pass
         return True
 
-    async def grab(self, task: TaskConfig) -> bool:
-        """执行12306抢票流程。
+    # ── 抢票主流程 ────────────────────────────────────
 
-        Args:
-            task: 任务配置
-                - task.url: 可以是余票查询页URL，或包含出发/到达/日期的参数
-                - task.date: 出发日期 (YYYY-MM-DD)
-                - task.session: 建议格式 "出发站-到达站"，如 "北京南-上海虹桥"
-                - task.price: 席别名称，如 "二等座", "一等座", "硬卧", "软卧"
-                - task.buyers: 乘车人姓名列表
-                - task.ticket_count: 购票数量
-        """
-        await self._log("info", f"[12306] 开始抢票任务: {task.name}")
-        await self._log("info", f"[12306] 日期: {task.date}, 席别: {task.price}, 乘车人: {task.buyers}")
+    async def grab(self, task: TaskConfig) -> bool:
+        await self._log("info", f"[12306] 开始抢票: {task.name}")
+
+        # 解析站点信息
+        from_station = task.from_station
+        to_station = task.to_station
+        train_number = task.train_number
+        seat_type = task.seat_type or task.price  # 兼容旧字段
+
+        # 兼容旧的 session 字段格式 "出发站-到达站"
+        if not from_station and task.session and "-" in task.session:
+            parts = task.session.split("-")
+            from_station = parts[0].strip()
+            to_station = parts[1].strip() if len(parts) > 1 else ""
+
+        if not from_station or not to_station:
+            await self._log("error", "[12306] 缺少出发站或到达站信息")
+            return False
+
+        await self._log("info", f"[12306] 路线: {from_station} → {to_station}, 日期: {task.date}")
+        if train_number:
+            await self._log("info", f"[12306] 目标车次: {train_number}")
+        if seat_type:
+            await self._log("info", f"[12306] 目标席别: {seat_type}")
 
         # 1. 登录
         logged_in = await self.login()
         if not logged_in:
-            await self._log("warn", "[12306] 未登录，但继续尝试...")
+            await self._log("warn", "[12306] 未登录，继续尝试...")
 
         try:
-            # 2. 进入余票查询页面
-            await self._log("info", "[12306] 进入余票查询页面...")
-            
-            # 如果 task.url 提供了直接的查询页URL，使用它；否则构造默认查询页
-            query_url = task.url if task.url else "https://kyfw.12306.cn/otn/leftTicket/init"
+            # 2. 打开余票查询页
+            await self._log("info", "[12306] 打开余票查询页...")
             await self.page.goto(
-                query_url,
+                "https://kyfw.12306.cn/otn/leftTicket/init",
                 timeout=PAGE_TIMEOUT,
                 wait_until="domcontentloaded",
             )
             await self._random_delay()
             await self.page.wait_for_load_state("networkidle")
 
-            # 3. 填写查询条件（出发站、到达站、日期）
-            await self._fill_query_params(task)
+            # 3. 填写查询参数
+            await self._log("info", "[12306] 填写查询参数...")
+            await self._fill_query_params(from_station, to_station, task.date)
 
-            # 4. 点击查询按钮并等待结果
-            await self._log("info", "[12306] 点击查询按钮...")
-            query_clicked = False
-            query_btn_selectors = [
-                "#query_ticket",
-                ".btn-primary",
-                "#search_one",
-                "button:has-text('查询')",
-                "a:has-text('查询')",
+            # 4. 点击查询
+            await self._log("info", "[12306] 点击查询...")
+            query_sels = [
+                "#query_ticket", "a:has-text('查询')",
+                "button:has-text('查询')", ".btn-query",
             ]
-            for selector in query_btn_selectors:
-                try:
-                    btn = await self.page.wait_for_selector(
-                        selector, timeout=5000, state="visible"
-                    )
-                    if btn:
-                        await self._random_delay()
-                        await btn.click()
-                        await self._log("info", "[12306] 已点击查询")
-                        query_clicked = True
-                        break
-                except PlaywrightTimeoutError:
-                    continue
-
-            if not query_clicked:
-                await self._log("error", "[12306] 未找到查询按钮")
+            if not await self.safe_click(query_sels, timeout=5000, desc="查询按钮"):
+                await self.screenshot("no_query_btn")
                 return False
 
-            # 等待查询结果加载
-            await self._log("info", "[12306] 等待查询结果...")
-            await asyncio.sleep(2)
-            try:
-                await self.page.wait_for_selector(
-                    "#queryLeftTable, .ticket-list, .train-list, tbody tr",
-                    timeout=15000,
-                )
-            except PlaywrightTimeoutError:
-                await self._log("error", "[12306] 查询结果加载超时")
-                return False
-
-            # 5. 选择车次（优先按 task.session 匹配车次号，如 G1, D123 等）
-            await self._log("info", f"[12306] 尝试选择车次: {task.session}")
-            train_selected = await self._select_train(task.session, task.price)
-            if not train_selected:
-                await self._log("error", "[12306] 未找到符合条件的车次或席别无票")
-                return False
-
-            # 6. 处理登录态确认（预订按钮点击后可能弹出登录框）
             await self._random_delay()
-            await asyncio.sleep(1)
-            
-            # 检查是否有登录弹窗
-            login_popup = await self._handle_login_popup()
-            if login_popup:
-                await self._log("info", "[12306] 处理登录弹窗后，重新尝试预订...")
-                # 重新选择车次
-                train_selected = await self._select_train(task.session, task.price)
-                if not train_selected:
-                    return False
+            await asyncio.sleep(2)
 
-            # 7. 进入订单确认页面，选择乘车人
-            await self._log("info", "[12306] 进入订单确认页面...")
-            await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
-            
-            # 检查是否进入了乘客选择/订单确认页
-            try:
-                await self.page.wait_for_selector(
-                    "#passengerList, .passenger-list, .order-confirm, #normal_passenger_id",
-                    timeout=15000,
-                )
-            except PlaywrightTimeoutError:
-                await self._log("warn", "[12306] 未进入订单确认页，检查页面状态...")
-                # 可能是被拦截或需要验证码
-                captcha_result = await self._handle_captcha()
-                if not captcha_result:
-                    await self._log("error", "[12306] 验证码处理失败或被拦截")
-                    return False
+            # 5. 选择车次并点击预订
+            await self._log("info", "[12306] 选择车次...")
+            if not await self._select_train(train_number, seat_type):
+                await self.screenshot("no_train")
+                return False
 
-            # 8. 选择乘车人
+            await self._random_delay()
+            await self.page.wait_for_load_state("domcontentloaded")
+
+            # 6. 处理登录弹窗
+            await self._handle_login_popup()
+
+            # 7. 选择乘车人
             if task.buyers:
-                await self._log("info", f"[12306] 选择乘车人: {task.buyers}")
+                await self._log("info", f"[12306] 选择乘车人: {', '.join(task.buyers)}")
                 await self._select_passengers(task.buyers)
 
-            # 9. 选择席别（订单确认页可能再次需要确认）
-            if task.price:
-                await self._log("info", f"[12306] 确认席别: {task.price}")
-                await self._confirm_seat_type(task.price)
+            # 8. 选择席别
+            if seat_type:
+                await self._confirm_seat_type(seat_type)
 
-            # 10. 提交订单
-            await self._log("info", "[12306] 准备提交订单...")
-            success = await self._submit_order()
-            if success:
-                await self._log("success", "[12306] 订单提交成功！请尽快完成支付！")
+            # 9. 提交订单
+            await self._log("info", "[12306] 提交订单...")
+            if await self._submit_order():
+                await self._log("success", "[12306] 订单提交成功！")
+                await self.screenshot("success")
                 return True
             else:
-                await self._log("error", "[12306] 订单提交失败")
+                await self.screenshot("submit_failed")
                 return False
 
         except Exception as e:
-            await self._log("error", f"[12306] 抢票流程异常: {e}")
+            await self._log("error", f"[12306] 抢票异常: {e}")
+            await self.screenshot("error")
             return False
 
-    # ------------------------------------------------------------------
-    # 内部辅助方法
-    # ------------------------------------------------------------------
+    # ── 辅助方法 ──────────────────────────────────────
 
-    async def _fill_query_params(self, task: TaskConfig) -> bool:
-        """填写12306余票查询参数（出发站、到达站、日期）。
-
-        task.session 建议格式: "出发站-到达站"，如 "北京南-上海虹桥"
-        """
-        try:
-            # 解析出发站和到达站
-            from_station = ""
-            to_station = ""
-            if task.session and "-" in task.session:
-                parts = task.session.split("-", 1)
-                from_station = parts[0].strip()
-                to_station = parts[1].strip()
-            else:
-                # 如果没有提供，尝试从 URL 或其他方式获取，或记录警告
-                await self._log("warn", "[12306] task.session 未提供出发-到达站信息，请在任务中设置如 '北京南-上海虹桥'")
-
-            # 填写出发站
-            if from_station:
-                from_selectors = [
-                    "#fromStationText",
-                    "input[name='leftTicketDTO.from_station_name']",
-                    ".from-station-input",
-                ]
-                for selector in from_selectors:
-                    try:
-                        inp = await self.page.wait_for_selector(
-                            selector, timeout=5000, state="visible"
-                        )
-                        if inp:
-                            await inp.fill("")
-                            await inp.fill(from_station)
-                            await self._random_delay()
-                            # 12306 输入站名后会弹出下拉选择，尝试点击第一个
-                            try:
-                                dropdown_item = await self.page.wait_for_selector(
-                                    ".city-box .city-item, .panel li, .combobox-item",
-                                    timeout=3000,
-                                )
-                                if dropdown_item:
-                                    await dropdown_item.click()
-                            except PlaywrightTimeoutError:
-                                pass
-                            await self._log("info", f"[12306] 已填写出发站: {from_station}")
-                            break
-                    except PlaywrightTimeoutError:
-                        continue
-
-            # 填写到达站
-            if to_station:
-                to_selectors = [
-                    "#toStationText",
-                    "input[name='leftTicketDTO.to_station_name']",
-                    ".to-station-input",
-                ]
-                for selector in to_selectors:
-                    try:
-                        inp = await self.page.wait_for_selector(
-                            selector, timeout=5000, state="visible"
-                        )
-                        if inp:
-                            await inp.fill("")
-                            await inp.fill(to_station)
-                            await self._random_delay()
-                            try:
-                                dropdown_item = await self.page.wait_for_selector(
-                                    ".city-box .city-item, .panel li, .combobox-item",
-                                    timeout=3000,
-                                )
-                                if dropdown_item:
-                                    await dropdown_item.click()
-                            except PlaywrightTimeoutError:
-                                pass
-                            await self._log("info", f"[12306] 已填写到达站: {to_station}")
-                            break
-                    except PlaywrightTimeoutError:
-                        continue
-
-            # 填写日期
-            if task.date:
-                date_selectors = [
-                    "#train_date",
-                    "input[name='leftTicketDTO.train_date']",
-                    ".date-input",
-                    "#query_ticket_date",
-                ]
-                for selector in date_selectors:
-                    try:
-                        inp = await self.page.wait_for_selector(
-                            selector, timeout=5000, state="visible"
-                        )
-                        if inp:
-                            await inp.fill(task.date)
-                            await self._random_delay()
-                            await self._log("info", f"[12306] 已填写日期: {task.date}")
-                            break
-                    except PlaywrightTimeoutError:
-                        continue
-
-            return True
-
-        except Exception as e:
-            await self._log("warn", f"[12306] 填写查询参数异常: {e}")
-            return False
-
-    async def _select_train(self, train_code: str, seat_type: str) -> bool:
-        """在查询结果中选择指定车次和席别。
-
-        Args:
-            train_code: 车次号，如 G1, D123
-            seat_type: 席别名称，如 "二等座", "一等座", "硬卧"
-
-        Returns:
-            True 如果成功点击了预订按钮。
-        """
-        try:
-            # 等待查询结果表格加载
-            await self.page.wait_for_selector(
-                "#queryLeftTable tbody tr, .train-item, .ticket-list-item",
-                timeout=15000,
-            )
-        except PlaywrightTimeoutError:
-            await self._log("error", "[12306] 查询结果未加载")
-            return False
-
-        # 如果指定了车次号，先定位到该车次行
-        if train_code:
-            train_row_selectors = [
-                f"tr:has-text('{train_code}')",
-                f".train-item:has-text('{train_code}')",
-                f".ticket-list-item:has-text('{train_code}')",
-                f"div:has-text('{train_code}'):near(#queryLeftTable)",
-            ]
-            target_row = None
-            for selector in train_row_selectors:
-                try:
-                    target_row = await self.page.wait_for_selector(
-                        selector, timeout=5000, state="visible"
-                    )
-                    if target_row:
-                        await self._log("info", f"[12306] 找到车次: {train_code}")
-                        break
-                except PlaywrightTimeoutError:
-                    continue
-
-            if not target_row:
-                await self._log("warn", f"[12306] 未找到车次 {train_code}，将选择第一个有余票的车次")
-
-        # 检查目标席别是否有票，并点击预订按钮
-        # 12306 预订按钮通常在每行最后一个 td 中
-        book_btn_selectors = [
-            f"tr:has-text('{train_code}') .btn72, tr:has-text('{train_code}') .btn130",
-            f"tr:has-text('{train_code}') a:has-text('预订')",
-            f"tr:has-text('{train_code}') button:has-text('预订')",
-            f".train-item:has-text('{train_code}') .book-btn",
-            ".btn72",
-            ".btn130",
-            "a:has-text('预订')",
-            "button:has-text('预订')",
-        ]
-
-        for selector in book_btn_selectors:
+    async def _fill_query_params(self, from_station: str, to_station: str, date: str):
+        """填写出发站、到达站、日期。"""
+        # 出发站
+        from_sels = ["#fromStationText", "#fromStation", "input[id*='from']"]
+        for sel in from_sels:
             try:
-                btn = await self.page.wait_for_selector(
-                    selector, timeout=5000, state="visible"
-                )
-                if btn:
-                    # 检查按钮是否可点击（非灰色/禁用状态）
-                    is_disabled = await btn.is_disabled()
-                    if is_disabled:
-                        await self._log("warn", "[12306] 预订按钮被禁用，该车次可能无票")
-                        continue
-                    
-                    # 检查对应行中是否有目标席别的余票
-                    row_text = ""
+                el = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
+                if el:
+                    await el.click()
+                    await el.fill("")
+                    await el.type(from_station, delay=100)
+                    await asyncio.sleep(0.5)
+                    # 选择下拉建议
                     try:
-                        row = await btn.evaluate("el => el.closest('tr')?.textContent || el.closest('.train-item')?.textContent || ''")
-                        row_text = row or ""
-                    except Exception:
-                        pass
-
-                    if seat_type and seat_type not in row_text:
-                        # 席别可能在行中没有完整名称，尝试简化匹配
-                        seat_keywords = {
-                            "二等座": ["二等", "2等"],
-                            "一等座": ["一等", "1等"],
-                            "商务座": ["商务", "商"],
-                            "硬座": ["硬座"],
-                            "软座": ["软座"],
-                            "硬卧": ["硬卧"],
-                            "软卧": ["软卧"],
-                            "无座": ["无座"],
-                            "高级软卧": ["高级软卧"],
-                        }
-                        matched = False
-                        for keyword in seat_keywords.get(seat_type, [seat_type]):
-                            if keyword in row_text:
-                                matched = True
-                                break
-                        if not matched and row_text:
-                            await self._log("warn", f"[12306] 目标行中未找到席别 '{seat_type}'，但仍尝试预订")
-
-                    await self._random_delay()
-                    await btn.click()
-                    await self._log("info", f"[12306] 已点击车次 {train_code or '第一个可用车次'} 的预订按钮")
-                    return True
+                        suggestion = await self.page.wait_for_selector(
+                            f".cname:has-text('{from_station}')", timeout=3000
+                        )
+                        if suggestion:
+                            await suggestion.click()
+                    except PlaywrightTimeoutError:
+                        await self.page.keyboard.press("Enter")
+                    await self._log("info", f"[12306] 已填写出发站: {from_station}")
+                    break
             except PlaywrightTimeoutError:
                 continue
 
-        await self._log("error", "[12306] 未找到可预订的车次")
-        return False
+        await self._random_delay(0.3, 0.8)
 
-    async def _handle_login_popup(self) -> bool:
-        """处理点击预订后弹出的登录窗口。
-
-        12306未登录时点击预订会弹出登录框。
-        """
-        popup_selectors = [
-            ".login-panel",
-            ".modal-login",
-            "#loginModal",
-            ".login-box",
-            "#j-login",
-        ]
-        for selector in popup_selectors:
+        # 到达站
+        to_sels = ["#toStationText", "#toStation", "input[id*='to']"]
+        for sel in to_sels:
             try:
-                popup = await self.page.wait_for_selector(
-                    selector, timeout=5000, state="visible"
-                )
-                if popup:
-                    await self._log("info", "[12306] 检测到登录弹窗，请用户手动完成登录...")
-                    # 等待用户完成登录（最多120秒）
-                    for attempt in range(60):
-                        await asyncio.sleep(2)
-                        try:
-                            still_visible = await popup.is_visible()
-                            if not still_visible:
-                                await self._log("info", "[12306] 登录弹窗已关闭")
-                                return True
-                        except Exception:
-                            return True
-                        if attempt % 10 == 0:
-                            await self._log("info", "[12306] 等待用户完成登录弹窗...")
-                    return False
+                el = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
+                if el:
+                    await el.click()
+                    await el.fill("")
+                    await el.type(to_station, delay=100)
+                    await asyncio.sleep(0.5)
+                    try:
+                        suggestion = await self.page.wait_for_selector(
+                            f".cname:has-text('{to_station}')", timeout=3000
+                        )
+                        if suggestion:
+                            await suggestion.click()
+                    except PlaywrightTimeoutError:
+                        await self.page.keyboard.press("Enter")
+                    await self._log("info", f"[12306] 已填写到达站: {to_station}")
+                    break
             except PlaywrightTimeoutError:
                 continue
-        return False
 
-    async def _handle_captcha(self) -> bool:
-        """处理12306验证码。
+        await self._random_delay(0.3, 0.8)
 
-        预留接口：目前遇到验证码时提示用户人工处理。
-        未来可集成第三方打码平台实现全自动。
-
-        Returns:
-            True 如果验证码处理成功或无需处理。
-        """
-        captcha_indicators = [
-            ".captcha-image",
-            "#captcha",
-            ".slide-verify",
-            ".verify-code",
-            "验证码",
-            "请点击",
-            "滑动验证",
-        ]
-        
-        page_text = await self.page.content()
-        has_captcha = any(kw in page_text for kw in captcha_indicators)
-        
-        if not has_captcha:
-            # 检查是否有验证码元素
-            for selector in captcha_indicators[:4]:
+        # 日期
+        if date:
+            date_sels = ["#train_date", "input[id*='date']"]
+            for sel in date_sels:
                 try:
-                    el = await self.page.wait_for_selector(selector, timeout=3000)
+                    el = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
                     if el:
-                        has_captcha = True
+                        await el.click(click_count=3)
+                        await el.fill(date)
+                        await self.page.keyboard.press("Escape")
+                        await self._log("info", f"[12306] 已填写日期: {date}")
                         break
                 except PlaywrightTimeoutError:
                     continue
 
-        if has_captcha:
-            await self._log("warn", "[12306] 检测到验证码/滑块验证，请用户在浏览器中手动处理...")
-            await self._log("info", "[12306] 验证码处理中（最多等待120秒）...")
-            
-            # 等待验证码消失（用户处理完毕）
-            for attempt in range(60):
-                await asyncio.sleep(2)
-                page_text = await self.page.content()
-                if not any(kw in page_text for kw in captcha_indicators):
-                    await self._log("success", "[12306] 验证码已处理完毕")
-                    return True
-                if attempt % 10 == 0:
-                    await self._log("info", "[12306] 等待验证码处理...")
-            
-            await self._log("error", "[12306] 验证码处理超时")
+    async def _select_train(self, train_number: str, seat_type: str) -> bool:
+        """在查询结果中选择车次并点击预订。"""
+        try:
+            await self.page.wait_for_selector("#queryLeftTable tr, .train-list", timeout=10000)
+        except PlaywrightTimeoutError:
+            await self._log("error", "[12306] 未加载到车次列表")
             return False
 
-        return True
+        await asyncio.sleep(1)
+
+        if train_number:
+            # 精确匹配车次号
+            train_sels = [
+                f"tr:has-text('{train_number}') .btn72, tr:has-text('{train_number}') a:has-text('预订')",
+                f"tr:has-text('{train_number}') .no-br a",
+                f"a.btn72:near(:text('{train_number}'))",
+            ]
+            for sel in train_sels:
+                try:
+                    btn = await self.page.wait_for_selector(sel, timeout=5000, state="visible")
+                    if btn:
+                        await btn.click()
+                        await self._log("info", f"[12306] 已选择车次: {train_number}")
+                        return True
+                except PlaywrightTimeoutError:
+                    continue
+
+        # 回退：选择第一个可预订的车次
+        fallback_sels = [
+            "#queryLeftTable .btn72", "a:has-text('预订')",
+            ".btn72:not(.btn-disabled)",
+        ]
+        for sel in fallback_sels:
+            try:
+                btn = await self.page.wait_for_selector(sel, timeout=5000, state="visible")
+                if btn:
+                    await btn.click()
+                    await self._log("warn", "[12306] 未找到目标车次，已选择第一个可预订车次")
+                    return True
+            except PlaywrightTimeoutError:
+                continue
+
+        await self._log("error", "[12306] 无可预订车次")
+        return False
+
+    async def _handle_login_popup(self):
+        """处理可能弹出的登录确认框。"""
+        try:
+            confirm_sels = [
+                "#login_box a:has-text('确认')",
+                ".modal-confirm", "button:has-text('确认')",
+            ]
+            await self.safe_click(confirm_sels, timeout=3000, desc="登录确认框")
+        except Exception:
+            pass
 
     async def _select_passengers(self, passengers: list[str]) -> bool:
-        """在订单确认页选择乘车人。"""
+        """选择乘车人。"""
         try:
-            # 等待乘车人列表加载
-            await self.page.wait_for_selector(
-                "#passengerList, #normal_passenger_id, .passenger-list, .passenger-item",
-                timeout=10000,
-            )
-        except PlaywrightTimeoutError:
-            await self._log("warn", "[12306] 未找到乘车人列表")
+            await self.page.wait_for_selector("#normal_passenger_id, .passenger-list", timeout=8000)
+            await asyncio.sleep(1)
+
+            for name in passengers:
+                passenger_sels = [
+                    f"label:has-text('{name}')",
+                    f"#normal_passenger_id li:has-text('{name}')",
+                    f".passenger-item:has-text('{name}')",
+                ]
+                clicked = False
+                for sel in passenger_sels:
+                    try:
+                        el = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
+                        if el:
+                            await el.click()
+                            await self._random_delay(0.2, 0.5)
+                            await self._log("info", f"[12306] 已选择乘车人: {name}")
+                            clicked = True
+                            break
+                    except PlaywrightTimeoutError:
+                        continue
+                if not clicked:
+                    await self._log("warn", f"[12306] 未找到乘车人: {name}")
+
+            return True
+        except Exception as e:
+            await self._log("warn", f"[12306] 选择乘车人异常: {e}")
             return False
 
-        for passenger_name in passengers:
-            passenger_selectors = [
-                f"#passengerList label:has-text('{passenger_name}')",
-                f"#normal_passenger_id label:has-text('{passenger_name}')",
-                f".passenger-item:has-text('{passenger_name}')",
-                f"label:has-text('{passenger_name}')",
-                f"tr:has-text('{passenger_name}') input[type='checkbox']",
-                f"div:has-text('{passenger_name}'):near(#passengerList)",
-            ]
-            selected = False
-            for selector in passenger_selectors:
-                try:
-                    el = await self.page.wait_for_selector(
-                        selector, timeout=3000, state="visible"
-                    )
-                    if el:
-                        # 如果是 checkbox 容器，找到其中的 input
-                        checkbox = await el.query_selector("input[type='checkbox']")
-                        if checkbox:
-                            is_checked = await checkbox.is_checked()
-                            if not is_checked:
-                                await el.click()
-                        else:
-                            await el.click()
-                        await self._random_delay()
-                        await self._log("info", f"[12306] 已选择乘车人: {passenger_name}")
-                        selected = True
-                        break
-                except PlaywrightTimeoutError:
-                    continue
-            if not selected:
-                await self._log("warn", f"[12306] 未找到乘车人: {passenger_name}")
-
-        return True
-
     async def _confirm_seat_type(self, seat_type: str) -> bool:
-        """在订单确认页确认或选择席别。"""
-        seat_selectors = [
+        """确认席别选择。"""
+        seat_sels = [
             f"select option:has-text('{seat_type}')",
-            f".seat-type:has-text('{seat_type}')",
-            f"label:has-text('{seat_type}')",
-            f"div:has-text('{seat_type}'):near(.seat-list)",
+            f"[class*='seat']:has-text('{seat_type}')",
         ]
-        for selector in seat_selectors:
+        for sel in seat_sels:
             try:
-                el = await self.page.wait_for_selector(
-                    selector, timeout=5000, state="visible"
-                )
+                el = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
                 if el:
-                    tag_name = await el.evaluate("el => el.tagName.toLowerCase()")
-                    if tag_name == "option":
-                        parent = await el.evaluate("el => el.closest('select')")
-                        if parent:
-                            await el.click()
-                    else:
-                        await el.click()
-                    await self._random_delay()
-                    await self._log("info", f"[12306] 已确认席别: {seat_type}")
+                    await el.click()
+                    await self._log("info", f"[12306] 已选择席别: {seat_type}")
                     return True
             except PlaywrightTimeoutError:
                 continue
         return False
 
     async def _submit_order(self) -> bool:
-        """提交12306订单。"""
-        submit_selectors = [
-            "#submitOrder_id",
-            "#qr_submit",
-            "button:has-text('提交订单')",
-            "button:has-text('确认')",
-            ".submit-btn",
-            "#submit-order",
+        """提交订单。"""
+        submit_sels = [
+            "#submitOrder_id", "button:has-text('提交订单')",
+            "a:has-text('提交订单')", "#submit_order",
         ]
-        for selector in submit_selectors:
-            try:
-                btn = await self.page.wait_for_selector(
-                    selector, timeout=10000, state="visible"
-                )
-                if btn:
-                    await self._random_delay()
-                    await btn.click()
-                    await self._log("info", "[12306] 已点击提交订单")
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        else:
-            await self._log("error", "[12306] 未找到提交订单按钮")
+        if not await self.safe_click(submit_sels, timeout=8000, desc="提交订单按钮"):
             return False
 
-        # 等待提交结果
+        await asyncio.sleep(2)
+
+        # 处理确认弹窗
+        confirm_sels = [
+            "#qr_submit_id", "button:has-text('确认')",
+            "#qr_submit_id a", ".modal-confirm",
+        ]
+        await self.safe_click(confirm_sels, timeout=5000, desc="确认按钮")
+
         await asyncio.sleep(3)
+
+        # 检查是否成功
         try:
-            await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except PlaywrightTimeoutError:
+            content = await self.page.content()
+            success_kws = ["订单已提交", "排队等候", "购票成功", "订单号", "支付"]
+            for kw in success_kws:
+                if kw in content:
+                    await self._log("success", f"[12306] 检测到: {kw}")
+                    return True
+
+            error_kws = ["出票失败", "系统繁忙", "余票不足", "占座失败"]
+            for kw in error_kws:
+                if kw in content:
+                    await self._log("error", f"[12306] 错误: {kw}")
+                    return False
+        except Exception:
             pass
 
-        current_url = self.page.url
-        success_url_keywords = ["pay", "confirm", "order", "payment", "noComplete", "myOrder"]
-        if any(kw in current_url.lower() for kw in success_url_keywords):
-            await self._log("success", f"[12306] URL检测到成功: {current_url}")
+        url = self.page.url.lower()
+        if any(kw in url for kw in ["order", "pay", "success", "queue"]):
             return True
-
-        page_text = await self.page.content()
-        success_keywords = [
-            "订单提交成功",
-            "等待支付",
-            "支付",
-            "订单确认",
-            "请在",
-            "分钟内完成",
-            "未完成订单",
-        ]
-        for kw in success_keywords:
-            if kw in page_text:
-                await self._log("success", f"[12306] 页面内容检测到成功: {kw}")
-                return True
-
-        # 12306 特殊的排队/处理中提示
-        processing_keywords = ["正在处理", "排队中", "请稍后"]
-        for kw in processing_keywords:
-            if kw in page_text:
-                await self._log("info", f"[12306] 订单正在处理中: {kw}，等待5秒再检测...")
-                await asyncio.sleep(5)
-                # 再次检测
-                page_text = await self.page.content()
-                for kw2 in success_keywords:
-                    if kw2 in page_text:
-                        await self._log("success", f"[12306] 处理后检测到成功: {kw2}")
-                        return True
-
-        error_keywords = ["失败", "无余票", "已售完", "系统繁忙", "请重试", "无法提交"]
-        for kw in error_keywords:
-            if kw in page_text:
-                await self._log("error", f"[12306] 检测到错误: {kw}")
-                return False
 
         await self._log("warn", "[12306] 无法确认订单状态")
         return False

@@ -1,332 +1,276 @@
-import { useEffect, useState, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import {
-  Play,
-  Square,
-  Trash2,
-  ArrowLeft,
-  Calendar,
-  Clock,
-  Link,
-  User,
-  Ticket,
-  AlertTriangle,
-} from 'lucide-react'
-import { taskApi } from '@/services/api'
-import type { Task, TaskLog } from '@/services/api'
-import { useStore } from '@/store/useStore'
-import PlatformIcon from '@/components/PlatformIcon'
-import StatusBadge from '@/components/StatusBadge'
-import LogViewer from '@/components/LogViewer'
-import CountdownTimer from '@/components/CountdownTimer'
+import { useEffect, useRef, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Play, Square, RotateCcw, Trash2, Edit3, Save, X, Calendar, Users, Banknote, Link, TrainFront } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { taskApi, TaskLog } from '../services/api';
+import StatusBadge from '../components/StatusBadge';
+import PlatformIcon, { getPlatformLabel } from '../components/PlatformIcon';
+import LogViewer from '../components/LogViewer';
+import CountdownTimer from '../components/CountdownTimer';
 
 export default function TaskDetail() {
-  const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
-  const { currentTask, setCurrentTask, logs, addLog } = useStore()
-  const [task, setTask] = useState<Task | null>(null)
-  const [taskLogs, setTaskLogs] = useState<TaskLog[]>([])
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const esRef = useRef<EventSource | null>(null)
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { currentTask, logs, fetchTask, fetchLogs, addLog, startTask, stopTask, restartTask, removeTask, updateTask, clearLogs } = useStore();
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState<Record<string, any>>({});
+  const sseRef = useRef<EventSource | null>(null);
 
-  const displayedTask = task || currentTask
-
-  // Fetch task details
   useEffect(() => {
-    if (!id) return
-    let mounted = true
-    const fetchTask = async () => {
-      try {
-        const data = await taskApi.get(id)
-        if (mounted) {
-          setTask(data)
-          setCurrentTask(data)
-        }
-      } catch {
-        // ignore
-      }
-    }
-    fetchTask()
-    const interval = setInterval(fetchTask, 2000)
-    return () => {
-      mounted = false
-      clearInterval(interval)
-    }
-  }, [id, setCurrentTask])
+    if (!id) return;
+    fetchTask(id);
+    fetchLogs(id);
 
-  // Fetch logs
+    const pollTimer = setInterval(() => {
+      fetchTask(id);
+    }, 3000);
+
+    return () => clearInterval(pollTimer);
+  }, [id, fetchTask, fetchLogs]);
+
+  // SSE for live logs
   useEffect(() => {
-    if (!id) return
-    let mounted = true
-    const fetchLogs = async () => {
+    if (!id) return;
+    const sse = taskApi.logStream(id);
+    sseRef.current = sse;
+
+    sse.onmessage = (event) => {
       try {
-        const data = await taskApi.logs(id, 100)
-        if (mounted) setTaskLogs(data)
-      } catch {
-        // ignore
-      }
-    }
-    fetchLogs()
-    const interval = setInterval(fetchLogs, 2000)
-    return () => {
-      mounted = false
-      clearInterval(interval)
-    }
-  }, [id])
+        const log: TaskLog = JSON.parse(event.data);
+        addLog(id, log);
+      } catch (e) { /* ignore */ }
+    };
 
-  // SSE stream when running
-  useEffect(() => {
-    if (!id || displayedTask?.status !== 'running') {
-      esRef.current?.close()
-      esRef.current = null
-      return
-    }
-
-    const es = taskApi.logStream(id)
-    esRef.current = es
-
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        if (data.task_id && data.message) {
-          addLog(data.task_id, data)
-        }
-      } catch {
-        // ignore
-      }
-    }
+    sse.onerror = () => {
+      sse.close();
+    };
 
     return () => {
-      es.close()
-      esRef.current = null
-    }
-  }, [id, displayedTask?.status, addLog])
+      sse.close();
+    };
+  }, [id, addLog]);
 
-  // Merge fetched logs + SSE logs from store
-  const mergedLogs = [...taskLogs, ...(id ? logs[id] || [] : [])]
-  // Deduplicate by timestamp+message
-  const seen = new Set<string>()
-  const uniqueLogs = mergedLogs.filter((log) => {
-    const key = `${log.timestamp}-${log.message}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-
-  const handleStart = async () => {
-    if (!id) return
-    try {
-      await taskApi.start(id)
-      const updated = await taskApi.get(id)
-      setTask(updated)
-      setCurrentTask(updated)
-    } catch (err) {
-      console.error('Failed to start', err)
-    }
+  if (!currentTask) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-sm text-muted-foreground">加载中...</div>
+      </div>
+    );
   }
 
-  const handleStop = async () => {
-    if (!id) return
-    try {
-      await taskApi.stop(id)
-      const updated = await taskApi.get(id)
-      setTask(updated)
-      setCurrentTask(updated)
-    } catch (err) {
-      console.error('Failed to stop', err)
-    }
-  }
+  const task = currentTask;
+  const taskLogs = logs[task.id] || [];
+  const isRunning = task.status === 'running' || task.status === 'waiting';
+  const canStart = task.status === 'idle' || task.status === 'stopped' || task.status === 'failed';
+  const is12306 = task.platform === '12306';
+
+  const startEdit = () => {
+    setEditForm({
+      name: task.name,
+      url: task.url,
+      date: task.date,
+      session: task.session,
+      price: task.price,
+      ticket_count: task.ticket_count,
+      from_station: task.from_station,
+      to_station: task.to_station,
+      train_number: task.train_number,
+      seat_type: task.seat_type,
+      max_retries: task.max_retries,
+      retry_interval: task.retry_interval,
+    });
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    await updateTask(task.id, editForm);
+    setEditing(false);
+  };
 
   const handleDelete = async () => {
-    if (!id) return
-    try {
-      await taskApi.delete(id)
-      navigate('/tasks')
-    } catch (err) {
-      console.error('Failed to delete', err)
+    if (confirm('确定要删除这个任务吗？')) {
+      await removeTask(task.id);
+      navigate('/tasks');
     }
-  }
-
-  if (!displayedTask) {
-    return (
-      <div className="flex items-center justify-center py-20 text-slate-500">
-        加载任务详情...
-      </div>
-    )
-  }
-
-  const isRunning = displayedTask.status === 'running'
+  };
 
   return (
-    <div className="space-y-6">
-      {/* Back + title */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => navigate('/tasks')}
-          className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors"
-        >
-          <ArrowLeft size={18} />
-        </button>
-        <div>
-          <h1 className="text-xl font-bold text-slate-100">{displayedTask.name}</h1>
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <button onClick={() => navigate('/tasks')} className="p-2 rounded-lg hover:bg-secondary transition-colors">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <PlatformIcon platform={task.platform} size="lg" />
+          <div>
+            <h1 className="text-xl font-bold text-foreground">{task.name}</h1>
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-xs text-muted-foreground">{getPlatformLabel(task.platform)}</span>
+              <StatusBadge status={task.status} />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {canStart && (
+            <button onClick={() => startTask(task.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors shadow-lg shadow-primary/20">
+              <Play className="w-4 h-4" /> 开始抢票
+            </button>
+          )}
+          {isRunning && (
+            <button onClick={() => stopTask(task.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 transition-colors">
+              <Square className="w-4 h-4" /> 停止
+            </button>
+          )}
+          {(task.status === 'failed' || task.status === 'stopped') && (
+            <button onClick={() => restartTask(task.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500/15 text-amber-400 text-sm font-medium hover:bg-amber-500/25 transition-colors">
+              <RotateCcw className="w-4 h-4" /> 重试
+            </button>
+          )}
+          {!editing && !isRunning && (
+            <button onClick={startEdit} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-secondary text-foreground text-sm hover:bg-secondary/80 transition-colors">
+              <Edit3 className="w-3.5 h-3.5" /> 编辑
+            </button>
+          )}
+          <button onClick={handleDelete} className="p-2 rounded-lg text-red-400 hover:bg-red-500/15 transition-colors">
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* Task info card */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-slate-800 border border-slate-700/50 rounded-xl p-5"
-      >
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <PlatformIcon platform={displayedTask.platform} />
-              <StatusBadge status={displayedTask.status} />
-            </div>
+      {/* Task Info */}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <h2 className="text-sm font-semibold mb-4">任务信息</h2>
 
-            {displayedTask.cron_time && displayedTask.status === 'idle' && (
-              <div className="flex items-center gap-2">
-                <Clock size={14} className="text-slate-500" />
-                <CountdownTimer target={displayedTask.cron_time} />
+        {editing ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground">任务名称</label>
+                <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              </div>
+              {is12306 ? (
+                <>
+                  <div>
+                    <label className="text-xs text-muted-foreground">出发站</label>
+                    <input value={editForm.from_station} onChange={(e) => setEditForm({ ...editForm, from_station: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">到达站</label>
+                    <input value={editForm.to_station} onChange={(e) => setEditForm({ ...editForm, to_station: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">车次号</label>
+                    <input value={editForm.train_number} onChange={(e) => setEditForm({ ...editForm, train_number: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="text-xs text-muted-foreground">链接</label>
+                  <input value={editForm.url} onChange={(e) => setEditForm({ ...editForm, url: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-muted-foreground">日期</label>
+                <input value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">最大重试</label>
+                <input type="number" value={editForm.max_retries} onChange={(e) => setEditForm({ ...editForm, max_retries: parseInt(e.target.value) })} className="w-full mt-1 px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setEditing(false)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-sm hover:bg-secondary">
+                <X className="w-3.5 h-3.5" /> 取消
+              </button>
+              <button onClick={saveEdit} className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm hover:bg-primary/90">
+                <Save className="w-3.5 h-3.5" /> 保存
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+            {is12306 ? (
+              <>
+                <InfoItem icon={TrainFront} label="路线" value={`${task.from_station} → ${task.to_station}`} />
+                {task.train_number && <InfoItem icon={TrainFront} label="车次" value={task.train_number} />}
+                {task.seat_type && <InfoItem icon={Banknote} label="席别" value={task.seat_type} />}
+              </>
+            ) : (
+              <>
+                <InfoItem icon={Link} label="链接" value={task.url} isLink />
+                {task.session && <InfoItem icon={Calendar} label="场次" value={task.session} />}
+                {task.price && <InfoItem icon={Banknote} label="票档" value={`${task.price} x ${task.ticket_count}张`} />}
+              </>
+            )}
+            <InfoItem icon={Calendar} label="日期" value={task.date || '未设置'} />
+            {task.buyers.length > 0 && (
+              <InfoItem icon={Users} label={is12306 ? '乘车人' : '观演人'} value={task.buyers.join(', ')} />
+            )}
+            {task.cron_time && (
+              <div className="col-span-full">
+                <CountdownTimer targetTime={task.cron_time} />
               </div>
             )}
-
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-400">
-              <span className="flex items-center gap-1.5">
-                <Calendar size={13} />
-                {displayedTask.date || '未设置日期'}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <Ticket size={13} />
-                {displayedTask.price || '未设票价'} · {displayedTask.ticket_count} 张
-              </span>
-              <span className="flex items-center gap-1.5">
-                <User size={13} />
-                {displayedTask.buyers?.filter(Boolean).join(', ') || '未设置'}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1.5 text-xs text-slate-600">
-              <Link size={12} />
-              <span className="truncate max-w-md">{displayedTask.url}</span>
-            </div>
           </div>
+        )}
 
-          {/* Actions */}
-          <div className="flex items-center gap-2 shrink-0">
-            {isRunning ? (
-              <button
-                onClick={handleStop}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-red-600/10 text-red-400 border border-red-600/20 hover:bg-red-600/20 transition-colors"
-              >
-                <Square size={14} />
-                停止
-              </button>
-            ) : (
-              <button
-                onClick={handleStart}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
-              >
-                <Play size={14} />
-                开始抢票
-              </button>
-            )}
-            <button
-              onClick={() => setShowDeleteConfirm(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-red-600/10 text-red-400 border border-red-600/20 hover:bg-red-600/20 transition-colors"
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-3 mt-4 pt-4 border-t border-border">
+          <MiniStat label="尝试次数" value={task.attempt_count} />
+          <MiniStat label="最大重试" value={task.max_retries} />
+          <MiniStat label="重试间隔" value={`${task.retry_interval}s`} />
+          <MiniStat label="优先级" value={task.priority} />
         </div>
-      </motion.div>
+
+        {task.last_error && (
+          <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
+            最后错误: {task.last_error}
+          </div>
+        )}
+      </div>
 
       {/* Logs */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-slate-200">实时日志</h2>
-          {isRunning && (
-            <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              实时推送中
-            </span>
-          )}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold">运行日志</h2>
+          <div className="flex gap-2">
+            <span className="text-xs text-muted-foreground">{taskLogs.length} 条日志</span>
+            {taskLogs.length > 0 && (
+              <button onClick={() => clearLogs(task.id)} className="text-xs text-red-400 hover:underline">清空</button>
+            )}
+          </div>
         </div>
-        <LogViewer logs={uniqueLogs} />
+        <LogViewer logs={taskLogs} maxHeight="500px" />
       </div>
-
-      {/* Config read-only */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="bg-slate-800 border border-slate-700/50 rounded-xl p-5"
-      >
-        <h2 className="text-sm font-semibold text-slate-200 mb-4">任务配置</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">任务ID</p>
-            <p className="text-slate-300 font-mono text-xs">{displayedTask.id}</p>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">平台</p>
-            <p className="text-slate-300">{displayedTask.platform}</p>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">场次</p>
-            <p className="text-slate-300">{displayedTask.session || '—'}</p>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">定时时间</p>
-            <p className="text-slate-300">{displayedTask.cron_time || '—'}</p>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">Headless</p>
-            <p className="text-slate-300">{displayedTask.headless ? '是' : '否'}</p>
-          </div>
-          <div className="bg-slate-900/50 rounded-lg p-3">
-            <p className="text-xs text-slate-600 mb-1">创建时间</p>
-            <p className="text-slate-300 text-xs">{new Date(displayedTask.created_at).toLocaleString()}</p>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* Delete confirm modal */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-sm w-full mx-4"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-lg bg-red-500/10 text-red-400">
-                <AlertTriangle size={20} />
-              </div>
-              <h3 className="text-base font-semibold text-slate-100">确认删除</h3>
-            </div>
-            <p className="text-sm text-slate-400 mb-5">
-              删除后任务及其日志将无法恢复，确定继续吗？
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleDelete}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
-              >
-                确认删除
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
     </div>
-  )
+  );
+}
+
+function InfoItem({ icon: Icon, label, value, isLink }: { icon: any; label: string; value: string; isLink?: boolean }) {
+  return (
+    <div className="flex items-start gap-2">
+      <Icon className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        {isLink ? (
+          <a href={value} target="_blank" rel="noopener noreferrer" className="text-sm text-primary hover:underline truncate block">
+            {value}
+          </a>
+        ) : (
+          <p className="text-sm font-medium truncate">{value}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="text-center">
+      <p className="text-lg font-bold text-foreground">{value}</p>
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+    </div>
+  );
 }

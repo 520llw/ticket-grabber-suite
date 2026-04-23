@@ -1,145 +1,97 @@
-import { useState } from 'react'
-import { motion } from 'framer-motion'
-import { Settings as SettingsIcon, Globe, Eye, EyeOff, FileText, Github, Info } from 'lucide-react'
-
-const LEGAL_NOTICE = `本软件仅供学习研究使用，禁止用于任何商业目的或黄牛行为。
-使用本软件进行抢票操作需自行承担全部风险，开发者不对任何直接或间接损失负责。
-本软件模拟人工浏览器操作，不保证 100% 抢票成功率。
-请遵守各票务平台的服务条款与相关法律法规。`
+import { useEffect } from 'react';
+import { useStore } from '../store/useStore';
+import { Cpu, HardDrive, Clock, Activity, Shield, Zap, Globe } from 'lucide-react';
 
 export default function Settings() {
-  const [headless, setHeadless] = useState(false)
-  const [webhook, setWebhook] = useState('')
-  const [logDays, setLogDays] = useState(7)
+  const { systemStatus, fetchStatus } = useStore();
+
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  const formatUptime = (seconds: number) => {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (d > 0) return `${d}天 ${h}小时 ${m}分钟`;
+    if (h > 0) return `${h}小时 ${m}分钟`;
+    return `${m}分钟`;
+  };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      {/* Header */}
+    <div className="max-w-3xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-slate-100">设置</h1>
-        <p className="text-sm text-slate-500 mt-0.5">全局配置与系统信息</p>
+        <h1 className="text-2xl font-bold text-foreground">系统设置</h1>
+        <p className="text-sm text-muted-foreground mt-1">查看系统状态和配置信息</p>
       </div>
 
-      {/* Global settings */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-slate-800 border border-slate-700/50 rounded-xl p-5 space-y-5"
-      >
-        <div className="flex items-center gap-2 mb-1">
-          <SettingsIcon size={16} className="text-emerald-400" />
-          <h2 className="text-sm font-semibold text-slate-200">全局设置</h2>
-        </div>
-
-        {/* Headless toggle */}
-        <label className="flex items-center justify-between p-3 rounded-lg bg-slate-900/50 border border-slate-700 cursor-pointer hover:border-slate-600 transition-colors">
-          <div>
-            <p className="text-sm font-medium text-slate-300">默认 Headless 模式</p>
-            <p className="text-[11px] text-slate-600 mt-0.5">新建任务时默认不显示浏览器窗口</p>
+      {/* System Status */}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
+          <Activity className="w-4 h-4 text-primary" /> 系统状态
+        </h2>
+        {systemStatus ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatusItem icon={Cpu} label="CPU 使用率" value={`${systemStatus.cpu_percent.toFixed(1)}%`} />
+            <StatusItem icon={HardDrive} label="内存使用" value={`${systemStatus.memory_mb.toFixed(0)} MB`} />
+            <StatusItem icon={Clock} label="运行时间" value={formatUptime(systemStatus.uptime_seconds)} />
+            <StatusItem icon={Globe} label="版本" value={`v${systemStatus.version}`} />
           </div>
-          <button
-            onClick={() => setHeadless(!headless)}
-            className={`w-11 h-6 rounded-full flex items-center px-0.5 transition-colors ${headless ? 'bg-emerald-600' : 'bg-slate-700'}`}
-          >
-            <motion.div
-              animate={{ x: headless ? 20 : 0 }}
-              className="w-5 h-5 rounded-full bg-white shadow-sm"
-            />
-          </button>
-        </label>
+        ) : (
+          <p className="text-sm text-muted-foreground">加载中...</p>
+        )}
+      </div>
 
-        {/* Webhook */}
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">
-            通知 Webhook URL
-          </label>
-          <div className="relative">
-            <Globe size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
-            <input
-              type="text"
-              value={webhook}
-              onChange={(e) => setWebhook(e.target.value)}
-              placeholder="https://hooks.example.com/notify"
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
-            />
-          </div>
-          <p className="text-[11px] text-slate-600 mt-1.5">抢票成功或失败时将发送 POST 请求至此地址</p>
+      {/* Feature Info */}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
+          <Zap className="w-4 h-4 text-primary" /> 功能特性
+        </h2>
+        <div className="grid gap-3">
+          {[
+            { title: '多平台支持', desc: '支持大麦网、猫眼、12306 三大平台' },
+            { title: '智能重试', desc: '失败后自动重试，可配置重试次数和间隔' },
+            { title: '定时抢票', desc: '设置开抢时间，到点自动执行' },
+            { title: '反检测', desc: '模拟真人操作，随机延迟，浏览器指纹伪装' },
+            { title: '实时日志', desc: 'SSE 实时推送日志，掌握抢票全过程' },
+            { title: '数据持久化', desc: '任务数据自动保存，重启不丢失' },
+            { title: '批量操作', desc: '支持批量开始、停止、删除任务' },
+            { title: '并发控制', desc: '智能控制并发数，避免资源耗尽' },
+          ].map(({ title, desc }) => (
+            <div key={title} className="flex items-start gap-3 p-3 bg-background rounded-lg">
+              <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0" />
+              <div>
+                <p className="text-sm font-medium">{title}</p>
+                <p className="text-xs text-muted-foreground">{desc}</p>
+              </div>
+            </div>
+          ))}
         </div>
+      </div>
 
-        {/* Log retention */}
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">
-            日志保留天数
-          </label>
-          <input
-            type="number"
-            min={1}
-            max={90}
-            value={logDays}
-            onChange={(e) => setLogDays(parseInt(e.target.value) || 7)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
-          />
+      {/* Disclaimer */}
+      <div className="bg-card border border-amber-500/30 rounded-xl p-5">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2 text-amber-400">
+          <Shield className="w-4 h-4" /> 免责声明
+        </h2>
+        <div className="text-xs text-muted-foreground space-y-2">
+          <p>本工具仅供学习研究使用，禁止用于商业用途或黄牛行为。</p>
+          <p>用户需自行承担使用风险，开发者不对任何因使用本工具造成的损失负责。</p>
+          <p>请遵守相关平台的服务条款和法律法规。</p>
         </div>
-
-        <div className="pt-2">
-          <button className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">
-            保存设置
-          </button>
-        </div>
-      </motion.div>
-
-      {/* Legal notice */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="bg-slate-800 border border-amber-600/20 rounded-xl p-5"
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <FileText size={16} className="text-amber-400" />
-          <h2 className="text-sm font-semibold text-amber-400">免责声明</h2>
-        </div>
-        <div className="bg-amber-500/5 rounded-lg p-3 border border-amber-500/10">
-          <p className="text-xs text-amber-200/80 leading-relaxed whitespace-pre-line">
-            {LEGAL_NOTICE}
-          </p>
-        </div>
-      </motion.div>
-
-      {/* About */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.15 }}
-        className="bg-slate-800 border border-slate-700/50 rounded-xl p-5"
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <Info size={16} className="text-slate-400" />
-          <h2 className="text-sm font-semibold text-slate-200">关于</h2>
-        </div>
-        <div className="space-y-3 text-sm">
-          <div className="flex items-center justify-between py-2 border-b border-slate-700/50">
-            <span className="text-slate-500">版本</span>
-            <span className="text-slate-300 font-mono">v1.0.0</span>
-          </div>
-          <div className="flex items-center justify-between py-2 border-b border-slate-700/50">
-            <span className="text-slate-500">开源参考</span>
-            <a
-              href="https://github.com/testerSunshine/12306"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 transition-colors"
-            >
-              <Github size={14} />
-              testerSunshine/12306
-            </a>
-          </div>
-          <div className="flex items-center justify-between py-2">
-            <span className="text-slate-500">技术栈</span>
-            <span className="text-slate-400">React 18 + Tailwind CSS + FastAPI + Playwright</span>
-          </div>
-        </div>
-      </motion.div>
+      </div>
     </div>
-  )
+  );
+}
+
+function StatusItem({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 p-3 bg-background rounded-lg">
+      <Icon className="w-5 h-5 text-muted-foreground" />
+      <div>
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-sm font-semibold">{value}</p>
+      </div>
+    </div>
+  );
 }

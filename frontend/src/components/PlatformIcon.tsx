@@ -1,56 +1,26 @@
-import type { Task['platform'] } from '@/services/api'
-import { Ticket, Train, ShoppingBag, Globe } from 'lucide-react'
+import { Ticket, Film, TrainFront, Globe } from 'lucide-react';
+import { clsx } from 'clsx';
 
-interface PlatformIconProps {
-  platform: Task['platform']
-  size?: number
-  showLabel?: boolean
-}
+const platformConfig: Record<string, { icon: any; label: string; color: string; bg: string }> = {
+  damai: { icon: Ticket, label: '大麦', color: 'text-blue-400', bg: 'bg-blue-500/15' },
+  maoyan: { icon: Film, label: '猫眼', color: 'text-yellow-400', bg: 'bg-yellow-500/15' },
+  '12306': { icon: TrainFront, label: '12306', color: 'text-sky-400', bg: 'bg-sky-500/15' },
+  custom: { icon: Globe, label: '自定义', color: 'text-purple-400', bg: 'bg-purple-500/15' },
+};
 
-const platformMeta: Record<
-  Task['platform'],
-  { icon: React.ReactNode; label: string; bg: string; text: string; border: string }
-> = {
-  damai: {
-    icon: <Ticket size={16} />,
-    label: '大麦',
-    bg: 'bg-red-500/10',
-    text: 'text-red-400',
-    border: 'border-red-500/20',
-  },
-  maoyan: {
-    icon: <ShoppingBag size={16} />,
-    label: '猫眼',
-    bg: 'bg-orange-500/10',
-    text: 'text-orange-400',
-    border: 'border-orange-500/20',
-  },
-  '12306': {
-    icon: <Train size={16} />,
-    label: '12306',
-    bg: 'bg-blue-500/10',
-    text: 'text-blue-400',
-    border: 'border-blue-500/20',
-  },
-  custom: {
-    icon: <Globe size={16} />,
-    label: '自定义',
-    bg: 'bg-slate-500/10',
-    text: 'text-slate-400',
-    border: 'border-slate-500/20',
-  },
-}
+export default function PlatformIcon({ platform, size = 'md' }: { platform: string; size?: 'sm' | 'md' | 'lg' }) {
+  const config = platformConfig[platform] || platformConfig.custom;
+  const Icon = config.icon;
+  const sizeMap = { sm: 'w-7 h-7', md: 'w-9 h-9', lg: 'w-12 h-12' };
+  const iconSize = { sm: 'w-3.5 h-3.5', md: 'w-4.5 h-4.5', lg: 'w-6 h-6' };
 
-export default function PlatformIcon({ platform, size = 16, showLabel = true }: PlatformIconProps) {
-  const meta = platformMeta[platform]
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${meta.bg} ${meta.text} ${meta.border}`}
-    >
-      <span style={{ width: size, height: size, display: 'inline-flex', alignItems: 'center' }}>
-        {meta.icon}
-      </span>
-      {showLabel && <span>{meta.label}</span>}
-    </span>
-  )
+    <div className={clsx('rounded-lg flex items-center justify-center', sizeMap[size], config.bg)}>
+      <Icon className={clsx(iconSize[size], config.color)} />
+    </div>
+  );
+}
+
+export function getPlatformLabel(platform: string) {
+  return platformConfig[platform]?.label || platform;
 }

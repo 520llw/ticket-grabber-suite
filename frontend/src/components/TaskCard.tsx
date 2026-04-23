@@ -1,109 +1,104 @@
-import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import { Play, Square, Clock, ExternalLink } from 'lucide-react'
-import type { Task } from '@/services/api'
-import PlatformIcon from './PlatformIcon'
-import StatusBadge from './StatusBadge'
-import CountdownTimer from './CountdownTimer'
-import { taskApi } from '@/services/api'
-import { useStore } from '@/store/useStore'
+import { useNavigate } from 'react-router-dom';
+import { Play, Square, RotateCcw, Calendar, Users, Banknote } from 'lucide-react';
+import { Task } from '../services/api';
+import { useStore } from '../store/useStore';
+import StatusBadge from './StatusBadge';
+import PlatformIcon, { getPlatformLabel } from './PlatformIcon';
+import CountdownTimer from './CountdownTimer';
 
-interface TaskCardProps {
-  task: Task
-  index?: number
-}
+export default function TaskCard({ task }: { task: Task }) {
+  const navigate = useNavigate();
+  const { startTask, stopTask, restartTask } = useStore();
 
-export default function TaskCard({ task, index = 0 }: TaskCardProps) {
-  const navigate = useNavigate()
-  const { updateTask } = useStore()
-  const isRunning = task.status === 'running'
-
-  const handleStart = async (e: React.MouseEvent) => {
-    e.stopPropagation()
+  const handleAction = async (e: React.MouseEvent, action: () => Promise<void>) => {
+    e.stopPropagation();
     try {
-      await taskApi.start(task.id)
-      const updated = { ...task, status: 'running' as const }
-      updateTask(updated)
+      await action();
     } catch (err) {
-      console.error('Failed to start task', err)
+      console.error(err);
     }
-  }
+  };
 
-  const handleStop = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    try {
-      await taskApi.stop(task.id)
-      const updated = { ...task, status: 'stopped' as const }
-      updateTask(updated)
-    } catch (err) {
-      console.error('Failed to stop task', err)
-    }
-  }
+  const isRunning = task.status === 'running' || task.status === 'waiting';
+  const canStart = task.status === 'idle' || task.status === 'stopped' || task.status === 'failed';
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: index * 0.05 }}
-      whileHover={{ y: -4, transition: { duration: 0.2 } }}
+    <div
       onClick={() => navigate(`/tasks/${task.id}`)}
-      className="group relative bg-slate-800 border border-slate-700/50 rounded-xl p-5 cursor-pointer hover:shadow-lg hover:shadow-emerald-900/10 hover:border-slate-600/50 transition-shadow"
+      className="group bg-card border border-border rounded-xl p-4 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all cursor-pointer"
     >
-      {/* Top row: platform + status */}
-      <div className="flex items-center justify-between mb-3">
-        <PlatformIcon platform={task.platform} />
+      {/* Header */}
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <PlatformIcon platform={task.platform} />
+          <div>
+            <h3 className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors line-clamp-1">
+              {task.name}
+            </h3>
+            <span className="text-[10px] text-muted-foreground">{getPlatformLabel(task.platform)}</span>
+          </div>
+        </div>
         <StatusBadge status={task.status} />
       </div>
 
-      {/* Task name */}
-      <h3 className="text-base font-semibold text-slate-100 mb-1 truncate">{task.name}</h3>
-
-      {/* URL */}
-      <div className="flex items-center gap-1 text-xs text-slate-500 mb-3 truncate">
-        <ExternalLink size={12} />
-        <span className="truncate">{task.url}</span>
-      </div>
-
-      {/* Countdown */}
-      {task.cron_time && task.status === 'idle' && (
-        <div className="mb-4">
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-2">
-            <Clock size={12} />
-            <span>距开抢还有</span>
+      {/* Info */}
+      <div className="space-y-1.5 mb-3">
+        {task.date && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Calendar className="w-3 h-3" />
+            <span>{task.date} {task.session}</span>
           </div>
-          <CountdownTimer target={task.cron_time} />
-        </div>
-      )}
-
-      {/* Meta info */}
-      <div className="flex items-center gap-3 text-xs text-slate-500 mb-4">
-        <span>{task.date || '未设置日期'}</span>
-        <span className="text-slate-700">|</span>
-        <span>{task.ticket_count} 张</span>
-        <span className="text-slate-700">|</span>
-        <span>{task.price || '未设票价'}</span>
+        )}
+        {task.price && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Banknote className="w-3 h-3" />
+            <span>{task.price} x {task.ticket_count}张</span>
+          </div>
+        )}
+        {task.buyers.length > 0 && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Users className="w-3 h-3" />
+            <span>{task.buyers.join(', ')}</span>
+          </div>
+        )}
+        {task.cron_time && task.status !== 'success' && (
+          <CountdownTimer targetTime={task.cron_time} />
+        )}
+        {task.attempt_count > 0 && (
+          <div className="text-[10px] text-muted-foreground">
+            已尝试 {task.attempt_count} 次
+            {task.last_error && <span className="text-red-400 ml-1">| {task.last_error.slice(0, 40)}</span>}
+          </div>
+        )}
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2 pt-3 border-t border-slate-700/50">
-        {isRunning ? (
+      <div className="flex gap-2">
+        {canStart && (
           <button
-            onClick={handleStop}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600/10 text-red-400 border border-red-600/20 hover:bg-red-600/20 transition-colors"
+            onClick={(e) => handleAction(e, () => startTask(task.id))}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/15 text-primary text-xs font-medium hover:bg-primary/25 transition-colors"
           >
-            <Square size={13} />
-            停止
+            <Play className="w-3 h-3" /> 开始
           </button>
-        ) : (
+        )}
+        {isRunning && (
           <button
-            onClick={handleStart}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600/10 text-emerald-400 border border-emerald-600/20 hover:bg-emerald-600/20 transition-colors"
+            onClick={(e) => handleAction(e, () => stopTask(task.id))}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 text-xs font-medium hover:bg-red-500/25 transition-colors"
           >
-            <Play size={13} />
-            开始
+            <Square className="w-3 h-3" /> 停止
+          </button>
+        )}
+        {(task.status === 'failed' || task.status === 'stopped') && (
+          <button
+            onClick={(e) => handleAction(e, () => restartTask(task.id))}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-400 text-xs font-medium hover:bg-amber-500/25 transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" /> 重试
           </button>
         )}
       </div>
-    </motion.div>
-  )
+    </div>
+  );
 }
